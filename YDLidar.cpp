@@ -22,6 +22,7 @@ YDLidar::~YDLidar() {
 
 // open the given serial interface and try to connect to the YDLIDAR
 bool YDLidar::begin(HardwareSerial &serialobj, uint32_t baudrate) {
+  // Close serial port then re-connect it
   if (isOpen()) {
     end();
   }
@@ -196,6 +197,7 @@ result_t YDLidar::startScan(bool force, uint32_t timeout) {
 }
 
 // wait scan data
+// This function convert scan command contents into usable data.
 result_t YDLidar::waitScanDot(uint32_t timeout) {
   int recvPos = 0;
   uint32_t startTs = millis();
@@ -214,9 +216,14 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
   static uint16_t SampleNumlAndCTCal = 0;
   static uint16_t LastSampleAngleCal = 0;
   static bool CheckSumResult = true;
-  static uint16_t Valu8Tou16 = 0;
+  static uint16_t Valu8Tou16 = 0; // Value of u8 to u16 ?
 
   uint8_t *packageBuffer = (uint8_t *)&package.package_Head;
+  // Pointer to first data in package struct address
+  // Example:
+  //    packageBuffer[0] refer to first byte of PH (AA)
+  //    packageBuffer[1] refer to second byte of PH (55)
+  //    packageBuffer[9] refer to second byte of CS
   uint8_t  package_Sample_Num = 0;
   int32_t AngleCorrectForDistance;
 
@@ -225,16 +232,19 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
   if (package_Sample_Index == 0) {
     recvPos = 0;
 
+    // Looping for first 10 bytes of the contents
     while ((waitTime = millis() - startTs) <= timeout) {
       int currentByte = _bined_serialdev->read();
 
       if (currentByte < 0) {
         continue;
       }
-
+      // Check each byte then append to packageBuffer
       switch (recvPos) {
       case 0:
-        if (currentByte != (PH & 0xFF)) {
+        if (currentByte != (PH & 0xFF)) { // 55AA & FF is AA
+        // When lidar is in scan state, Firsr contents (PH) must be 0x55AA.
+        // First byte is AA (?)
           continue;
         }
 
@@ -243,7 +253,7 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
       case 1:
         CheckSumCal = PH;
 
-        if (currentByte != (PH >> 8)) {
+        if (currentByte != (PH >> 8)) { // 55AA >> 8 is 55
           recvPos = 0;
           continue;
         }
@@ -252,8 +262,10 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
 
       case 2:
         SampleNumlAndCTCal = currentByte;
+        // SampleNumlAndCTCal = CT
 
         if (((currentByte&0x01) != CT_Normal) && ((currentByte & 0x01) != CT_RingStart)) {
+          // last bit of current        0                                        1
           recvPos = 0;
           continue;
         }
@@ -261,12 +273,14 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
         break;
 
       case 3:
-        SampleNumlAndCTCal += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT);
-        package_Sample_Num = currentByte;
+        SampleNumlAndCTCal += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT); // 2 bytes (CT and LSN)
+        // SampleNumlAndCTCal = (CT << 8) + LSN
+        // SampleNumlAndCTCal= CT LSN
+        package_Sample_Num = currentByte; // Sample quantity
         break;
 
       case 4:
-        if (currentByte & LIDAR_RESP_MEASUREMENT_CHECKBIT) {
+        if (currentByte & LIDAR_RESP_MEASUREMENT_CHECKBIT) { // Last bit of currentByte 1 or 0 ?
           FirstSampleAngle = currentByte;
         } else {
           recvPos = 0;
@@ -276,7 +290,7 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
         break;
 
       case 5:
-        FirstSampleAngle += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT);
+        FirstSampleAngle += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT); // 2 bytes os starting angle
         CheckSumCal ^= FirstSampleAngle;
         FirstSampleAngle = FirstSampleAngle >> 1;
         break;
@@ -292,10 +306,11 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
         break;
 
       case 7:
-        LastSampleAngle += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT);
+        LastSampleAngle += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT); // 2 bytes of ending angle
         LastSampleAngleCal = LastSampleAngle;
         LastSampleAngle = LastSampleAngle >> 1;
 
+        // Calculate interval sample angle.
         if (package_Sample_Num == 1) {
           IntervalSampleAngle = 0;
         } else {
@@ -320,24 +335,26 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
         break;
 
       case 9:
-        CheckSum += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT);
+        CheckSum += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT); // 2 bytes of check sum
         break;
       }
 
-      packageBuffer[recvPos++] = currentByte;
+      packageBuffer[recvPos++] = currentByte; // Append into struct "node_package" named "package"
 
       if (recvPos  == PackagePaidBytes) {
+        // The first 10 bytes of contents before 256 byte of sample data
         package_recvPos = recvPos;
         break;
 
       }
-    }
+    } // exit the pre-sampling data while loop
 
-    if (PackagePaidBytes == recvPos) {
+    if (PackagePaidBytes == recvPos) {// If we already have 10 first bytes of the contents
       startTs = millis();
       recvPos = 0;
       int package_sample_sum = package_Sample_Num << 1;
 
+      // Looping for sampling data
       while ((waitTime = millis() - startTs) <= timeout) {
         int currentByte = _bined_serialdev->read();
 
@@ -345,21 +362,22 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
           continue;
         }
 
-        if ((recvPos & 1) == 1) {
-          Valu8Tou16 += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT);
-          CheckSumCal ^= Valu8Tou16;
+        if ((recvPos & 1) == 1) { // If last bit == 1
+          Valu8Tou16 += (currentByte << LIDAR_RESP_MEASUREMENT_ANGLE_SAMPLE_SHIFT); // << 8
+          CheckSumCal ^= Valu8Tou16; // XOR
         } else {
           Valu8Tou16 = currentByte;
         }
 
-        packageBuffer[package_recvPos + recvPos] = currentByte;
+        packageBuffer[package_recvPos + recvPos] = currentByte; // Append in contents struct
         recvPos++;
 
         if (package_sample_sum == recvPos) {
+          // Recap: package_sample_sum is one Lshift of sample quantity
           package_recvPos += recvPos;
           break;
         }
-      }
+      } //  exit the sampling data loop
 
       if (package_sample_sum != recvPos) {
         return RESULT_FAIL;
@@ -368,8 +386,8 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
       return RESULT_FAIL;
     }
 
-    CheckSumCal ^= SampleNumlAndCTCal;
-    CheckSumCal ^= LastSampleAngleCal;
+    CheckSumCal ^= SampleNumlAndCTCal; // CT and LSN
+    CheckSumCal ^= LastSampleAngleCal; // LSA
 
     if (CheckSumCal != CheckSum) {
       CheckSumResult = false;
@@ -377,9 +395,9 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
       CheckSumResult = true;
     }
 
-  }
+  }// if package_Sample_Index == 0
 
-  uint8_t package_CT;
+  uint8_t package_CT; // Package type (1B)
   package_CT = package.package_CT;
 
   if ((package_CT&0x01) == CT_Normal) {
@@ -412,7 +430,7 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
                                   LIDAR_RESP_MEASUREMENT_ANGLE_SHIFT) + LIDAR_RESP_MEASUREMENT_CHECKBIT;
       }
     }
-  } else {
+  } else { // CheckSumResult == false
     node.sync_quality = Node_Default_Quality + Node_NotSync;
     node.angle_q6_checkbit = LIDAR_RESP_MEASUREMENT_CHECKBIT;
     node.distance_q2 = 0;
@@ -420,15 +438,15 @@ result_t YDLidar::waitScanDot(uint32_t timeout) {
     return RESULT_FAIL;
   }
 
-  point.distance = node.distance_q2 * 0.25f;
-  point.angle = (node.angle_q6_checkbit >> LIDAR_RESP_MEASUREMENT_ANGLE_SHIFT) / 64.0f;
+  point.distance = node.distance_q2 * 0.25f;  // Actual distance
+  point.angle = (node.angle_q6_checkbit >> LIDAR_RESP_MEASUREMENT_ANGLE_SHIFT) / 64.0f; // Actual angle
   point.quality = (node.sync_quality >> LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT);
   point.startBit = (node.sync_quality & LIDAR_RESP_MEASUREMENT_SYNCBIT);
 
   package_Sample_Index++;
   nowPackageNum = package.nowPackageNum;
 
-  if (package_Sample_Index >= nowPackageNum) {
+  if (package_Sample_Index >= nowPackageNum) { // when sample index exceed sample quantity
     package_Sample_Index = 0;
   }
 

@@ -65,16 +65,17 @@ typedef enum {
   CT_Tail,
 } CT;
 
-struct node_info {
-  uint8_t    sync_quality;
-  uint16_t   angle_q6_checkbit;
-  uint16_t   distance_q2;
+struct node_info { // Like RPLidar scan command but no startbit, not_startbit and checkbit
+  // We'll have startbit in scanPoint
+  uint8_t    sync_quality;  // RShift to obtain quality
+  uint16_t   angle_q6_checkbit; // Actual heading angle is (angle_q6_checkbit >> LIDAR_RESP_MEASUREMENT_ANGLE_SHIFT) / 64
+  uint16_t   distance_q2; // Actual distance is distance_q2 * 0.25
 } __attribute__((packed)) ;
 
-struct node_package {
+struct node_package { // This is scan command contents
   uint16_t  package_Head;
   uint8_t   package_CT;
-  uint8_t   nowPackageNum;
+  uint8_t   nowPackageNum; // Sample quantity
   uint16_t  packageFirstSampleAngle;
   uint16_t  packageLastSampleAngle;
   uint16_t  checkSum;
@@ -123,8 +124,8 @@ struct lidar_ans_header {
 
 struct scanPoint {
   uint8_t quality;
-  float 	angle;
-  float 	distance;
+  float 	angle;  // Actual heading
+  float 	distance; // Actual distance
   bool    startBit;
 };
 
